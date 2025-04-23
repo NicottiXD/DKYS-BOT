@@ -39,5 +39,26 @@ client.on('messageCreate', message => {
   }
 });
 
+client.on('messageCreate', async message => {
+  if (message.content === '!button') {
+    const button = new ButtonBuilder()
+      .setCustomId('my_button')
+      .setLabel('Click me!')
+      .setStyle(ButtonStyle.Primary);
+
+    const row = new ActionRowBuilder().addComponents(button);
+
+    await message.reply({ content: 'Here is a button!', components: [row] });
+  }
+});
+
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isButton()) return;
+
+  if (interaction.customId === 'my_button') {
+    await interaction.reply({ content: 'You clicked the button!', ephemeral: true });
+  }
+});
+
 
 client.login('MTM2MjgxNjE5NTc5MDg5NzI5Mg.GEBDk6.-0GJB2d9ayGQv-a_FEh7EwJiiG0F1_-4oV_iJ0');
