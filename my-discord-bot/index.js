@@ -57,25 +57,43 @@ const buttonConfigs = [
 
 client.on('messageCreate', async message => {
   if (message.content === '!cajadank') {
-    
-    const rows = [];
+    const db = admin.firestore(); // Asegurate que Firebase esté inicializado
+    const clipsSnapshot = await db.collection('clips').get();
 
-    for (let i = 0; i < 20; i++) {
-      const button = new ButtonBuilder()
-        .setCustomId(`play_clip_${i + 1}`)
-        .setLabel(`🎵 Clip ${i + 1}`)
-        .setStyle(ButtonStyle.Primary);
-
-      if (i % 5 === 0) rows.push(new ActionRowBuilder());
-      rows[Math.floor(i / 5)].addComponents(button);
+    if (clipsSnapshot.empty) {
+      await message.reply('❌ No hay clips cargados en la base de datos.');
+      return;
     }
 
+    const clips = [];
+    clipsSnapshot.forEach(doc => {
+      const data = doc.data();
+      clips.push({
+        id: doc.id, // o podrías usar algo como clip1, clip2
+        label: data.label || 'Sin nombre',
+        file: data.file || ''
+      });
+    });
+
+    const rows = [];
+
+    clips.forEach((clip, index) => {
+      const button = new ButtonBuilder()
+        .setCustomId(`play_clip_${clip.id}`) // id de Firestore como identificador único
+        .setLabel(`🎵 ${clip.label}`)
+        .setStyle(ButtonStyle.Primary);
+
+      if (index % 5 === 0) rows.push(new ActionRowBuilder());
+      rows[Math.floor(index / 5)].addComponents(button);
+    });
+
     await message.reply({
-      content: 'Choose a clip to play in voice:',
-      components: rows,
+      content: '🎶 Elegí un clip para reproducir en el canal de voz:',
+      components: rows
     });
   }
 });
+
 
 
 //ingresa al chat de audio a reproducir el audio
@@ -91,67 +109,102 @@ const {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
-  const id = interaction.customId;
+  const clipId = interaction.customId.replace('play_clip_', '');
+  const db = admin.firestore();
+  const clipDoc = await db.collection('clips').doc(clipId).get();
 
-  if (id.startsWith('play_clip_')) {
-    const clipNum = id.split('_')[2];
-    const clipPath = path.join(__dirname, 'media', `clip${clipNum}.mp3`);
+  if (!clipDoc.exists) {
+    await interaction.reply({ content: '❌ Clip no encontrado.', ephemeral: true });
+    return;
+  }
 
-    const channel = interaction.member.voice?.channel;
-    if (!channel) {
-      return interaction.reply({
-        content: 'You must be in a voice channel to play audio! 🔇',
-        ephemeral: true,
-      });
-    }
+  const clipData = clipDoc.data();
 
-    // Join voice channel
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-    });
+  const member = interaction.member;
+  const voiceChannel = member.voice.channel;
 
-    const resource = createAudioResource(clipPath);
+  if (!voiceChannel) {
+    await interaction.reply({ content: '🚫 Debés estar en un canal de voz para reproducir el clip.', ephemeral: true });
+    return;
+  }
+
+  // Reproducir audio
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: interaction.guild.id,
+    adapterCreator: interaction.guild.voiceAdapterCreator,
+  });
+
+  const filePath = path.join(__dirname, 'clips', clipData.file); // Asegurate que el archivo exista en ./clips/
+
+  try {
+    const resource = createAudioResource(filePath);
     const player = createAudioPlayer();
 
-    connection.subscribe(player);
     player.play(resource);
+    connection.subscribe(player);
 
-    /*await interaction.reply({
-      content: `🎶 Playing Clip ${clipNum}!`,
-      ephemeral: true,
-    });*/
-
-    // Disconnect after playback ends
     player.on(AudioPlayerStatus.Idle, () => {
-      connection.destroy();
+      connection.destroy(); // Salir del canal después de reproducir
     });
+
+    await interaction.reply({
+      content: `▶️ Reproduciendo: **${clipData.label}**`,
+      ephemeral: false
+    });
+
+  } catch (err) {
+    console.error(err);
+    await interaction.reply({ content: '⚠️ Hubo un error al reproducir el audio.', ephemeral: true });
+    connection.destroy();
   }
 });
 
 // Cambiar nombre de boton
 client.on('messageCreate', async message => {
   if (message.content.startsWith('!setbutton')) {
-    const [_, id, emoji, ...labelParts] = message.content.split(' ');
-    const label = labelParts.join(' ');
-    const buttonNum = parseInt(id);
+    var matches = message.content.match(/"([^"]+)"\s+"([^"]+)"/);
 
-    if (isNaN(buttonNum) || buttonNum < 1 || buttonNum > 20) {
-      return message.reply('❌ Invalid button number (1-20)');
+    if (!matches || matches.length < 3) {
+      message.reply('❌ Usá el formato correcto: `!setbutton "Nombre actual" "Nuevo nombre"`');
+      return;
     }
 
-    buttonConfigs[buttonNum - 1] = {
-      label: `${emoji} ${label}`,
-      file: `clip${buttonNum}.mp3`, // for now, keep filename based on button number
-    };
+    var viejoBoton = matches[1];
+    var nuevoBoton = matches[2];
 
+    actualizarClipPorLabel(viejoBoton, nuevoBoton);
+
+    // const [_, id, emoji, ...labelParts] = message.content.split(' ');
+    // const label = labelParts.join(' ');
+    // const buttonNum = parseInt(id);
+
+    // if (isNaN(buttonNum) || buttonNum < 1 || buttonNum > 20) {
+    //   return message.reply('❌ Invalid button number (1-20)');
+    // }
+
+    // buttonConfigs[buttonNum - 1] = {
+    //   label: `${emoji} ${label}`,
+    //   file: `clip${buttonNum}.mp3`, // for now, keep filename based on button number
+    // };
    
   }
 });
 
+async function actualizarClipPorLabel(viejoBoton, nuevoBoton) {
+  const clipsRef = db.collection('clips');
+  const snapshot = await clipsRef.where('label', '==', viejoBoton).get();
 
+  if (snapshot.empty) {
+    console.log(`❌ No se encontró un clip con el label "${viejoBoton}"`);
+    return;
+  }
 
+  snapshot.forEach(async doc => {
+    await doc.ref.update(nuevoBoton);
+    console.log(`✅ Clip "${viejoBoton}" actualizado`);
+  });
+}
 
 
 client.login('MTM2MjgxNjE5NTc5MDg5NzI5Mg.GEBDk6.-0GJB2d9ayGQv-a_FEh7EwJiiG0F1_-4oV_iJ0');
