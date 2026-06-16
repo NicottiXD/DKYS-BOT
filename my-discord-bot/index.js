@@ -1,4 +1,4 @@
-// index.js — Don't KYS Bot (optimizado)
+// index.js — Don't KYS Bot (con paginación ilimitada)
 require('dotenv').config();
 const {
   Client,
@@ -21,9 +21,9 @@ const fs    = require('fs');
 const https = require('https');
 const http  = require('http');
 
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  HELPER: descargar archivo desde una URL
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 function downloadFile(url, destPath) {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? https : http;
@@ -38,16 +38,15 @@ function downloadFile(url, destPath) {
   });
 }
 
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  CONFIGURACIÓN DE BOTONES (persistente en JSON)
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 const CONFIG_PATH = path.join(__dirname, 'buttonConfig.json');
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_PATH)) {
     return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   }
-  // Sin clips por defecto, arranca vacío
   return {};
 }
 
@@ -57,9 +56,9 @@ function saveConfig(config) {
 
 let buttonConfig = loadConfig();
 
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  CLIENTE DISCORD
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -71,38 +70,70 @@ const client = new Client({
 });
 
 client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`? Logged in as ${client.user.tag}`);
 });
 
-// ─────────────────────────────────────────────
-//  HELPER: construir filas de botones
-// ─────────────────────────────────────────────
-function buildButtonRows(config) {
+// ---------------------------------------------
+//  PAGINACIÓN
+//  Cada página tiene hasta 20 clips (4 filas × 5 botones)
+//  La 5ª fila queda reservada para los botones ? ?
+// ---------------------------------------------
+const CLIPS_PER_PAGE = 20;
+
+function buildPageRows(config, page) {
   const ids = Object.keys(config).map(Number).sort((a, b) => a - b);
+  const totalPages = Math.ceil(ids.length / CLIPS_PER_PAGE);
+  page = Math.max(0, Math.min(page, totalPages - 1)); // clamp
+
+  const pageIds = ids.slice(page * CLIPS_PER_PAGE, (page + 1) * CLIPS_PER_PAGE);
   const rows = [];
 
-  for (let i = 0; i < ids.length; i++) {
-    const id  = ids[i];
+  for (let i = 0; i < pageIds.length; i++) {
+    const id  = pageIds[i];
     const cfg = config[id];
 
     const button = new ButtonBuilder()
       .setCustomId(`play_clip_${id}`)
-      .setLabel(`${cfg.emoji ?? '🎵'} ${cfg.label}`)
+      .setLabel(`${cfg.emoji ?? '??'} ${cfg.label}`)
       .setStyle(ButtonStyle.Primary);
 
     if (i % 5 === 0) rows.push(new ActionRowBuilder());
     rows[Math.floor(i / 5)].addComponents(button);
-
-    // Discord permite máximo 5 filas (25 botones)
-    if (rows.length >= 5 && (i + 1) % 5 === 0) break;
   }
 
-  return rows;
+  // Fila de navegación (siempre presente si hay más de una página)
+  if (totalPages > 1) {
+    const navRow = new ActionRowBuilder();
+
+    navRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`page_prev_${page}`)
+        .setLabel('? Anterior')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page === 0),
+
+      new ButtonBuilder()
+        .setCustomId(`page_indicator`)
+        .setLabel(`Página ${page + 1} / ${totalPages}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true),
+
+      new ButtonBuilder()
+        .setCustomId(`page_next_${page}`)
+        .setLabel('Siguiente ?')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page === totalPages - 1),
+    );
+
+    rows.push(navRow);
+  }
+
+  return { rows, page, totalPages };
 }
 
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  COMANDOS DE TEXTO
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   const msg  = message.content;
@@ -111,7 +142,7 @@ client.on('messageCreate', async message => {
 
   // --- !ping ---
   if (cmd === '!ping') {
-    return message.reply('Pong! 🏓');
+    return message.reply('Pong! ??');
   }
 
   // --- rick roll ---
@@ -130,31 +161,30 @@ client.on('messageCreate', async message => {
     });
   }
 
-  // ── !cajadank ──────────────────────────────
-  // Muestra el panel de botones
+  // -- !cajadank ------------------------------
   if (cmd === '!cajadank') {
     if (Object.keys(buttonConfig).length === 0) {
-      return message.reply('📭 No hay clips cargados todavía. Usá `!addclip 🎵 Nombre` adjuntando un .mp3 para agregar uno.');
+      return message.reply('?? No hay clips cargados todavía. Usá `!addclip ?? Nombre` adjuntando un .mp3 para agregar uno.');
     }
-    const rows = buildButtonRows(buttonConfig);
+    const { rows, page, totalPages } = buildPageRows(buttonConfig, 0);
+    const total = Object.keys(buttonConfig).length;
     return message.reply({
-      content: '🎶 Elegí un clip para reproducir en el canal de voz:',
+      content: `?? Elegí un clip para reproducir en el canal de voz: *(${total} clips, ${totalPages} página${totalPages > 1 ? 's' : ''})*`,
       components: rows,
     });
   }
 
-  // ── !setbutton <id> <emoji> <nombre> ───────
-  // Ejemplo: !setbutton 3 🔥 Fuego épico
+  // -- !setbutton <id> <emoji> <nombre> -------
   if (cmd === '!setbutton') {
     const id    = parseInt(args[1]);
-    const emoji = args[2] ?? '🎵';
+    const emoji = args[2] ?? '??';
     const label = args.slice(3).join(' ');
 
-    if (isNaN(id) || id < 1 || id > 25) {
-      return message.reply('❌ Número de botón inválido (1–25).');
+    if (isNaN(id) || id < 1) {
+      return message.reply('? Número de botón inválido (debe ser = 1).');
     }
     if (!label) {
-      return message.reply('❌ Usá: `!setbutton <id> <emoji> <nombre>`\nEjemplo: `!setbutton 3 🔥 Fuego épico`');
+      return message.reply('? Usá: `!setbutton <id> <emoji> <nombre>`\nEjemplo: `!setbutton 3 ?? Fuego épico`');
     }
 
     buttonConfig[id] = {
@@ -163,30 +193,23 @@ client.on('messageCreate', async message => {
       file: buttonConfig[id]?.file ?? `clip${id}.mp3`,
     };
     saveConfig(buttonConfig);
-    return message.reply(`✅ Botón ${id} actualizado: ${emoji} ${label}`);
+    return message.reply(`? Botón ${id} actualizado: ${emoji} ${label}`);
   }
 
-  // ── !addclip <emoji> <nombre> [+ adjunto .mp3/.ogg/.wav] ─
-  // Si adjuntás un audio, lo descarga automáticamente a media/
+  // -- !addclip <emoji> <nombre> [+ adjunto .mp3/.ogg/.wav] -
   if (cmd === '!addclip') {
-    const emoji = args[1] ?? '🎵';
-    const label = args.slice(2).join(' ') ;
+    const emoji = args[1] ?? '??';
+    const label = args.slice(2).join(' ');
 
     const ids   = Object.keys(buttonConfig).map(Number);
     const newId = ids.length > 0 ? Math.max(...ids) + 1 : 1;
 
-    if (newId > 25) {
-      return message.reply('❌ Ya tenés 25 botones (límite de Discord). Usá `!removeclip <id>` para liberar uno.');
-    }
-
-    // Verificar adjunto de audio
     const attachment = message.attachments.first();
     const validExts  = ['.mp3', '.ogg', '.wav'];
     const hasAudio   = attachment && validExts.some(e => attachment.name.toLowerCase().endsWith(e));
     const fileName   = hasAudio ? attachment.name : `clip${newId}.mp3`;
     const destPath   = path.join(__dirname, 'media', fileName);
 
-    // Crear carpeta media/ si no existe
     if (!fs.existsSync(path.join(__dirname, 'media'))) {
       fs.mkdirSync(path.join(__dirname, 'media'));
     }
@@ -194,104 +217,179 @@ client.on('messageCreate', async message => {
     buttonConfig[newId] = { label, emoji, file: fileName };
     saveConfig(buttonConfig);
 
+    const total      = Object.keys(buttonConfig).length;
+    const totalPages = Math.ceil(total / CLIPS_PER_PAGE);
+
     if (hasAudio) {
       try {
-        await message.reply(`⏬ Descargando \`${fileName}\`...`);
+        await message.reply(`? Descargando \`${fileName}\`...`);
         await downloadFile(attachment.url, destPath);
-        return message.reply(`✅ Clip ${newId} guardado: ${emoji} **${label}** → \`media/${fileName}\``);
+        return message.reply(`? Clip ${newId} guardado: ${emoji} **${label}** ? \`media/${fileName}\`\n?? Total: ${total} clips (${totalPages} páginas en \`!cajadank\`)`);
       } catch (err) {
         console.error('Error descargando archivo:', err);
-        return message.reply(`⚠️ Clip ${newId} registrado pero falló la descarga. Subí \`${fileName}\` manualmente a \`media/\`.`);
+        return message.reply(`?? Clip ${newId} registrado pero falló la descarga. Subí \`${fileName}\` manualmente a \`media/\`.`);
       }
     } else {
       return message.reply(
-        `✅ Clip ${newId} registrado: ${emoji} **${label}**\n` +
-        `📎 Tip: la próxima vez adjuntá el **.mp3** en el mismo mensaje y el bot lo descarga solo.\n` +
-        `📁 O subí manualmente el archivo a \`media/${fileName}\`.`
+        `? Clip ${newId} registrado: ${emoji} **${label}**\n` +
+        `?? Tip: la próxima vez adjuntá el **.mp3** en el mismo mensaje y el bot lo descarga solo.\n` +
+        `?? O subí manualmente el archivo a \`media/${fileName}\`.\n` +
+        `?? Total: ${total} clips (${totalPages} páginas en \`!cajadank\`)`
       );
     }
   }
 
-  // ── !removeclip <id> ───────────────────────
+  // -- !removeclip <id> -----------------------
   if (cmd === '!removeclip') {
     const id = parseInt(args[1]);
     if (isNaN(id) || !buttonConfig[id]) {
-      return message.reply('❌ ID de clip inválido o no existe.');
+      return message.reply('? ID de clip inválido o no existe.');
     }
     const removed = buttonConfig[id];
     delete buttonConfig[id];
     saveConfig(buttonConfig);
-    return message.reply(`🗑️ Clip ${id} (${removed.emoji} ${removed.label}) eliminado.`);
+    return message.reply(`??? Clip ${id} (${removed.emoji} ${removed.label}) eliminado.`);
   }
 
-  // ── !listclips ─────────────────────────────
+  // -- !listclips -----------------------------
   if (cmd === '!listclips') {
-    const lines = Object.entries(buttonConfig)
-      .sort(([a], [b]) => Number(a) - Number(b))
-      .map(([id, c]) => `\`${id}\` — ${c.emoji} **${c.label}** → \`${c.file}\``);
+    const entries = Object.entries(buttonConfig).sort(([a], [b]) => Number(a) - Number(b));
+    const total = entries.length;
 
-    return message.reply(`📋 **Clips configurados:**\n${lines.join('\n')}`);
+    if (total === 0) return message.reply('?? No hay clips configurados.');
+
+    // Discord tiene límite de 2000 chars por mensaje; paginamos el texto si hace falta
+    const CHUNK = 30;
+    for (let i = 0; i < entries.length; i += CHUNK) {
+      const lines = entries.slice(i, i + CHUNK)
+        .map(([id, c]) => `\`${id}\` — ${c.emoji} **${c.label}** ? \`${c.file}\``);
+      const header = i === 0 ? `?? **Clips configurados (${total} total):**\n` : '';
+      await message.reply(`${header}${lines.join('\n')}`);
+    }
+    return;
   }
 
-  // ── !setfile <id> <archivo.mp3> ────────────
-  // Cambiar qué archivo reproduce un botón
+  // -- !setfile <id> <archivo.mp3> ------------
   if (cmd === '!setfile') {
     const id   = parseInt(args[1]);
     const file = args[2];
     if (isNaN(id) || !buttonConfig[id]) {
-      return message.reply('❌ ID inválido.');
+      return message.reply('? ID inválido.');
     }
-    if (!file || !file.endsWith('.mp3')) {
-      return message.reply('❌ Indicá un archivo .mp3. Ej: `!setfile 3 sonido_nuevo.mp3`');
+    if (!file || !file.match(/\.(mp3|ogg|wav)$/i)) {
+      return message.reply('? Indicá un archivo .mp3/.ogg/.wav. Ej: `!setfile 3 sonido_nuevo.mp3`');
     }
     buttonConfig[id].file = file;
     saveConfig(buttonConfig);
-    return message.reply(`✅ Botón ${id} ahora reproduce \`${file}\`.`);
+    return message.reply(`? Botón ${id} ahora reproduce \`${file}\`.`);
   }
 
-  // ── !help ──────────────────────────────────
+ // -- !purge <cantidad> ----------------------
+if (cmd === '!purge') {
+  if (!message.member.permissions.has('ManageMessages')) {
+    return message.reply('? No tenés permiso para usar este comando.');
+  }
+
+  const amount = parseInt(args[1]);
+
+  if (isNaN(amount) || amount < 1 || amount > 100) {
+    return message.reply('? Indicá una cantidad entre 1 y 100. Ej: `!purge 10`');
+  }
+
+  try {
+    await message.delete();
+
+    // Buscar los últimos `amount` mensajes
+    const fetched = await message.channel.messages.fetch({ limit: amount });
+
+    // Intentar bulkDelete primero (solo funciona con mensajes < 14 días)
+    let deletedCount = 0;
+    try {
+      const bulk = await message.channel.bulkDelete(fetched, true);
+      deletedCount = bulk.size;
+    } catch {
+      // Si bulkDelete falla, borrar uno por uno
+      for (const msg of fetched.values()) {
+        try {
+          await msg.delete();
+          deletedCount++;
+        } catch {}
+      }
+    }
+
+  
+  } catch (err) {
+    console.error('Error en !purge:', err);
+    return message.channel.send(`? Error: \`${err.message}\``);
+  }
+}	
+  // -- !help ----------------------------------
   if (cmd === '!help') {
     return message.reply(`
-**🤖 Comandos disponibles:**
-\`!cajadank\` — Mostrar panel de clips
-\`!setbutton <id> <emoji> <nombre>\` — Renombrar un botón
-\`!addclip <emoji> <nombre>\` — Agregar un clip nuevo
+**?? Comandos disponibles:**
+\`!cajadank\` — Mostrar panel de clips (con páginas si hay más de 20)
+\`!addclip <emoji> <nombre>\` — Agregar un clip nuevo *(sin límite)*
 \`!removeclip <id>\` — Eliminar un clip
-\`!setfile <id> <archivo.mp3>\` — Cambiar el archivo de un botón
+\`!setbutton <id> <emoji> <nombre>\` — Renombrar un botón
+\`!setfile <id> <archivo>\` — Cambiar el archivo de un botón
 \`!listclips\` — Ver todos los clips configurados
 \`!ping\` — Test de conexión
+\`!purge <cantidad>\` — Borrar mensajes del canal (máx. 100)
     `.trim());
   }
 });
 
-// ─────────────────────────────────────────────
-//  INTERACCIONES (botones)
-// ─────────────────────────────────────────────
+// ---------------------------------------------
+//  INTERACCIONES (botones de clips + navegación)
+// ---------------------------------------------
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
   const id = interaction.customId;
+
+  // -- Botones de paginación ------------------
+  if (id.startsWith('page_prev_') || id.startsWith('page_next_')) {
+    await interaction.deferUpdate(); // editar el mensaje existente, no crear uno nuevo
+
+    const currentPage = parseInt(id.split('_')[2]);
+    const newPage     = id.startsWith('page_prev_') ? currentPage - 1 : currentPage + 1;
+
+    const { rows } = buildPageRows(buttonConfig, newPage);
+    const total      = Object.keys(buttonConfig).length;
+    const totalPages = Math.ceil(total / CLIPS_PER_PAGE);
+
+    return interaction.editReply({
+      content: `?? Elegí un clip para reproducir en el canal de voz: *(${total} clips, ${totalPages} páginas)*`,
+      components: rows,
+    });
+  }
+
+  // -- Botón indicador (deshabilitado, no hace nada) --
+  if (id === 'page_indicator') {
+    return interaction.deferUpdate();
+  }
+
+  // -- Reproducir clip ------------------------
   if (!id.startsWith('play_clip_')) return;
 
-  // Deferir SIEMPRE primero para evitar "Interacción fallida"
   await interaction.deferReply({ ephemeral: true });
 
   const clipId  = parseInt(id.split('_')[2]);
   const clipCfg = buttonConfig[clipId];
 
   if (!clipCfg) {
-    return interaction.editReply('❌ Este clip no existe en la configuración.');
+    return interaction.editReply('? Este clip no existe en la configuración.');
   }
 
   const clipPath = path.join(__dirname, 'media', clipCfg.file);
 
   if (!fs.existsSync(clipPath)) {
-    return interaction.editReply(`❌ Archivo no encontrado: \`media/${clipCfg.file}\``);
+    return interaction.editReply(`? Archivo no encontrado: \`media/${clipCfg.file}\``);
   }
 
   const voiceChannel = interaction.member.voice?.channel;
   if (!voiceChannel) {
-    return interaction.editReply('🔇 Tenés que estar en un canal de voz primero.');
+    return interaction.editReply('?? Tenés que estar en un canal de voz primero.');
   }
 
   try {
@@ -310,7 +408,6 @@ client.on('interactionCreate', async interaction => {
     await interaction.deleteReply();
 
     player.on(AudioPlayerStatus.Idle, () => connection.destroy());
-
     player.on('error', err => {
       console.error('Error de audio:', err);
       connection.destroy();
@@ -318,9 +415,9 @@ client.on('interactionCreate', async interaction => {
 
   } catch (err) {
     console.error('Error al unirse al canal de voz:', err);
-    return interaction.editReply('❌ No pude unirme al canal de voz.');
+    return interaction.editReply('? No pude unirme al canal de voz.');
   }
 });
 
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 client.login(process.env.DISCORD_TOKEN);
