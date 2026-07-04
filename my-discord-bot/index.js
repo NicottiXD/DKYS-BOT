@@ -177,7 +177,7 @@ client.on('messageCreate', async message => {
   }
 
   const triggerWords2 = [
-    'nigga','negro',
+    'nigga','negro','black','kuro','macaco',
   ];
   if (triggerWords2.some(w => msg.toLowerCase().includes(w))) {
     return message.reply({
